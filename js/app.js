@@ -16,9 +16,9 @@
   // target clues is a floor; cap/min bound the hardest technique required.
   var DIFFICULTIES = [
     { name: "Easy",   clues: 34, cap: 1, min: -1, tries: 4 },
-    { name: "Medium", clues: 28, cap: 3, min: 2,  tries: 8 },
-    { name: "Hard",   clues: 24, cap: 5, min: 4,  tries: 12 },
-    { name: "Expert", clues: 20, cap: 6, min: 5,  tries: 14 }
+    { name: "Medium", clues: 28, cap: 3, min: 2,  tries: 30 },
+    { name: "Hard",   clues: 24, cap: 5, min: 4,  tries: 40 },
+    { name: "Expert", clues: 20, cap: 6, min: 5,  tries: 80 }
   ];
 
   var SAVE_KEY = "game";
