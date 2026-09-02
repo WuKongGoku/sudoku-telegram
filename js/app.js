@@ -141,11 +141,20 @@
     } catch (e) { /* older clients */ }
   }
 
+  function localSet(key, value) {
+    try { localStorage.setItem("sudoku:" + key, value); } catch (e) { /* private mode */ }
+  }
+
   function storageSet(key, value) {
     if (tg && tg.CloudStorage && tg.CloudStorage.setItem) {
-      try { tg.CloudStorage.setItem(key, value, function () {}); return; } catch (e) { /* fall through */ }
+      try {
+        // The error arrives in the callback, not as a throw: a flood limit or a
+        // full store would otherwise lose the game silently.
+        tg.CloudStorage.setItem(key, value, function (err) { if (err) localSet(key, value); });
+        return;
+      } catch (e) { /* fall through */ }
     }
-    try { localStorage.setItem("sudoku:" + key, value); } catch (e) { /* private mode */ }
+    localSet(key, value);
   }
 
   function storageGet(key, cb) {
@@ -163,6 +172,26 @@
   // ==================================================================
   // Persistence
   // ==================================================================
+
+  // Every tap used to trigger a CloudStorage round trip; Telegram flood-limits
+  // those. Writes are coalesced instead, and forced at the moments that matter.
+  var SAVE_DEBOUNCE_MS = 2500;
+  var saveTimer = 0, saveDirty = false;
+
+  function saveSoon() {
+    saveDirty = true;
+    if (saveTimer) return;
+    saveTimer = setTimeout(function () { saveTimer = 0; saveNow(); }, SAVE_DEBOUNCE_MS);
+  }
+
+  function saveNow() {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+    // saveState() no-ops while a puzzle is being generated; keep the work
+    // pending rather than dropping it.
+    if (generating) { saveSoon(); return; }
+    saveDirty = false;
+    saveState();
+  }
 
   function saveState() {
     if (generating) return;
@@ -258,7 +287,7 @@
         hideOverlay();
         setStatus(inTelegram ? "Tap a cell, then a number below." : "Click a cell, then type 1-9.");
         refresh();
-        saveState();
+        saveNow();
       });
     });
   }
@@ -277,7 +306,8 @@
   // ==================================================================
 
   function pushUndo(i) {
-    undoStack.push({ i: i, value: player[i], notes: notes[i], mistakes: mistakes, hinted: !!hinted[i] });
+    undoStack.push({ i: i, value: player[i], notes: notes[i], mistakes: mistakes,
+                     hints: hintsUsed, hinted: !!hinted[i] });
     if (undoStack.length > 500) undoStack.shift();
   }
 
@@ -306,6 +336,7 @@
     if (solved || generating || selected < 0) return;
     var i = selected;
     if (puzzle[i]) { setStatus("That cell is a given clue."); haptic("rigid"); return; }
+    if (n === 0 && !player[i] && !notes[i]) return; // nothing to erase
     pushUndo(i);
     wrong = {};
 
@@ -337,7 +368,7 @@
       }
     }
     refresh();
-    saveState();
+    saveSoon();
     checkWin();
   }
 
@@ -347,13 +378,14 @@
     player[s.i] = s.value;
     notes[s.i] = s.notes;
     mistakes = s.mistakes;
+    hintsUsed = s.hints;
     if (s.hinted) hinted[s.i] = true; else delete hinted[s.i];
     wrong = {};
     selected = s.i;
     setStatus("Undone.");
     haptic("light");
     refresh();
-    saveState();
+    saveSoon();
   }
 
   function checkBoard() {
@@ -397,7 +429,7 @@
     setStatus(move.technique + ": r" + (move.y + 1) + "c" + (move.x + 1) + " must be " + move.value + ".");
     haptic("medium");
     refresh();
-    saveState();
+    saveSoon();
     checkWin();
   }
 
@@ -410,7 +442,7 @@
     showOverlay("Solved!", msg, true);
     setStatus(msg);
     haptic("success");
-    saveState();
+    saveNow();
   }
 
   function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
@@ -564,12 +596,35 @@
   $("btn-undo").addEventListener("click", undo);
   $("btn-hint").addEventListener("click", hint);
   $("btn-check").addEventListener("click", checkBoard);
-  $("btn-new").addEventListener("click", newGame);
-  elOverlayButton.addEventListener("click", newGame);
+  /** True once the player has actually put something on the board. */
+  function gameInProgress() {
+    if (solved || generating || !running) return false;
+    for (var i = 0; i < 81; i++) if (!puzzle[i] && (player[i] || notes[i])) return true;
+    return false;
+  }
+
+  /** Asks before throwing away a started puzzle; `onCancel` puts the UI back. */
+  function confirmDiscard(onOk, onCancel) {
+    if (!gameInProgress()) { onOk(); return; }
+    var q = "Start a new puzzle? Your current game will be lost.";
+    if (tg && tg.showConfirm) {
+      try {
+        tg.showConfirm(q, function (ok) { if (ok) onOk(); else if (onCancel) onCancel(); });
+        return;
+      } catch (e) { /* older clients */ }
+    }
+    if (window.confirm(q)) onOk(); else if (onCancel) onCancel();
+  }
+
+  $("btn-new").addEventListener("click", function () { confirmDiscard(newGame); });
+  elOverlayButton.addEventListener("click", newGame); // only shown when finished
   elNotes.addEventListener("click", toggleNotes);
   elDifficulty.addEventListener("change", function () {
-    difficultyIndex = +elDifficulty.value;
-    newGame();
+    var wanted = +elDifficulty.value;
+    confirmDiscard(
+      function () { difficultyIndex = wanted; newGame(); },
+      function () { elDifficulty.value = String(difficultyIndex); }
+    );
   });
 
   function toggleNotes() {
@@ -581,6 +636,10 @@
 
   document.addEventListener("keydown", function (ev) {
     if (generating) return;
+    var t = ev.target;
+    // Let a focused form control have its own keys (the difficulty picker).
+    if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     var k = ev.key;
     if (k >= "1" && k <= "9") enterDigit(+k);
     else if (k === "0" || k === "Backspace" || k === "Delete") enterDigit(0);
@@ -610,17 +669,25 @@
   // Boot
   // ==================================================================
 
+  // Count real time, not ticks: background throttling made the old 1s interval
+  // under-count. Time spent with the app hidden does not count against you.
+  var lastTick = Date.now();
+  var sinceSave = 0;
   setInterval(function () {
-    if (running && !solved) {
-      elapsed++;
-      elTimer.textContent = formatTime(elapsed);
-      if (elapsed % 10 === 0) saveState();
-    }
+    var now = Date.now();
+    var delta = (now - lastTick) / 1000;
+    lastTick = now;
+    if (!running || solved || document.hidden) return;
+    if (delta < 0 || delta > 5) delta = 1; // clock jump or a resumed tab
+    elapsed += delta;
+    elTimer.textContent = formatTime(elapsed);
+    sinceSave += delta;
+    if (sinceSave >= 10) { sinceSave = 0; saveSoon(); }
   }, 1000);
 
   window.addEventListener("resize", layout);
-  document.addEventListener("visibilitychange", function () { if (document.hidden) saveState(); });
-  window.addEventListener("pagehide", saveState);
+  document.addEventListener("visibilitychange", function () { if (document.hidden) saveNow(); });
+  window.addEventListener("pagehide", saveNow);
 
   if (tg) {
     try { tg.ready(); } catch (e) {}
