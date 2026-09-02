@@ -1,0 +1,160 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mini App preview</title>
+<!--
+  Renders index.html inside a phone-sized frame with a STUBBED Telegram SDK, so
+  the Telegram code paths (themeParams, haptics, CloudStorage, mobile copy) can
+  be checked in a normal browser. Must be served over HTTP, not opened as a
+  file:// URL, because it fetches index.html.
+
+    python -m http.server 8099
+    → http://127.0.0.1:8099/tools/preview.html?theme=dark&demo=1
+
+  Query params:
+    theme=dark|light   which Telegram theme to simulate (default dark)
+    demo=1             tap some cells and keys so digits/notes/conflicts show
+    demo=solve         press Hint until the puzzle is finished (win overlay)
+    w=390&h=740        frame size
+-->
+<style>
+  html, body { margin: 0; background: #6b7280; font: 12px system-ui, sans-serif; color: #fff; }
+  #wrap { padding: 10px; }
+  iframe { border: 0; display: block; background: #000; }
+  #label { padding: 4px 2px 8px; opacity: .85; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="label">loading…</div>
+  <iframe id="f"></iframe>
+</div>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var dark = (q.get("theme") || "dark") === "dark";
+  var W = +(q.get("w") || 390);
+  var H = +(q.get("h") || 740);
+  var demo = q.get("demo");
+
+  var frame = document.getElementById("f");
+  frame.width = W;
+  frame.height = H;
+
+  // Telegram's real theme params, as a client sends them.
+  var themeParams = dark
+    ? { bg_color: "#17212b", text_color: "#f5f5f5", hint_color: "#708499",
+        link_color: "#6ab3f3", button_color: "#5288c1", button_text_color: "#ffffff",
+        secondary_bg_color: "#232e3c", header_bg_color: "#17212b" }
+    : { bg_color: "#ffffff", text_color: "#000000", hint_color: "#707579",
+        link_color: "#3390ec", button_color: "#3390ec", button_text_color: "#ffffff",
+        secondary_bg_color: "#f4f4f5", header_bg_color: "#ffffff" };
+
+  var STUB = '<scr' + 'ipt>' +
+    'var _cloud = {};' +
+    'window.Telegram = { WebApp: {' +
+    '  initData: "", initDataUnsafe: {}, version: "7.10", platform: "android",' +
+    '  colorScheme: ' + JSON.stringify(dark ? "dark" : "light") + ',' +
+    '  themeParams: ' + JSON.stringify(themeParams) + ',' +
+    '  isExpanded: true, viewportHeight: ' + H + ', viewportStableHeight: ' + H + ',' +
+    '  ready: function(){}, expand: function(){}, close: function(){},' +
+    '  disableVerticalSwipes: function(){}, enableVerticalSwipes: function(){},' +
+    '  setHeaderColor: function(){}, setBackgroundColor: function(){},' +
+    '  isVersionAtLeast: function(){ return true; },' +
+    '  onEvent: function(){}, offEvent: function(){},' +
+    '  HapticFeedback: { impactOccurred: function(){ return this; },' +
+    '                    notificationOccurred: function(){ return this; },' +
+    '                    selectionChanged: function(){ return this; } },' +
+    '  CloudStorage: {' +
+    '    setItem: function(k, v, cb){ _cloud[k] = v; if (cb) cb(null, true); },' +
+    '    getItem: function(k, cb){ cb(null, _cloud[k] || ""); },' +
+    '    removeItem: function(k, cb){ delete _cloud[k]; if (cb) cb(null, true); } },' +
+    '  MainButton: { show: function(){ return this; }, hide: function(){ return this; },' +
+    '                setText: function(){ return this; }, onClick: function(){ return this; } }' +
+    '} };' +
+    '</scr' + 'ipt>';
+
+  fetch("../index.html").then(function (r) { return r.text(); }).then(function (html) {
+    // Swap the real SDK for the stub and re-root relative URLs at the project root.
+    html = html.replace(/<script src="https:\/\/telegram\.org[^>]*><\/script>/, STUB);
+    html = html.replace("<head>", '<head><base href="../">');
+    var doc = frame.contentDocument;
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    document.getElementById("label").textContent =
+      "index.html @ " + W + "×" + H + " · Telegram " + (dark ? "dark" : "light") + " theme stub";
+
+    // Poll with rAF rather than a timer: headless virtual time does not
+    // advance setTimeout reliably, but it does drive animation frames.
+    if (demo) {
+      var tries = 0;
+      (function waitForBoard() {
+        tries++;
+        var d = frame.contentDocument;
+        // #info is only filled once a puzzle has actually been generated;
+        // the overlay starts hidden in the markup, so it is not a usable signal.
+        var info = d && d.getElementById("info");
+        var ready = !!(info && info.textContent && d.getElementById("board") &&
+                       d.getElementById("overlay").hidden);
+        if (ready) {
+          try { demo === "solve" ? runSolve() : runDemo(); }
+          catch (e) { document.getElementById("label").textContent = "DEMO ERROR: " + e.message; }
+          return;
+        }
+        if (tries > 600) {
+          document.getElementById("label").textContent = "DEMO TIMEOUT (board never ready)";
+          return;
+        }
+        requestAnimationFrame(waitForBoard);
+      })();
+    }
+  });
+
+  /** Press Hint until the board is finished, to reach the win overlay. */
+  function runSolve() {
+    var doc = frame.contentDocument;
+    for (var i = 0; i < 90; i++) {
+      if (!doc.getElementById("overlay").hidden) break;
+      doc.getElementById("btn-hint").click();
+    }
+  }
+
+  /** Drive the app the way a finger would: real pointer events and clicks. */
+  function runDemo() {
+    // Re-read these: document.write() can swap the document object out.
+    var win = frame.contentWindow;
+    var doc = frame.contentDocument;
+    var canvas = doc.getElementById("board");
+    if (!canvas) throw new Error("no canvas in frame");
+    var rect = canvas.getBoundingClientRect();
+    var cell = rect.width / 9;
+
+    function tapCell(col, row) {
+      var ev = new win.PointerEvent("pointerdown", {
+        clientX: rect.left + (col + 0.5) * cell,
+        clientY: rect.top + (row + 0.5) * cell,
+        bubbles: true, cancelable: true
+      });
+      canvas.dispatchEvent(ev);
+    }
+    function press(sel) { doc.querySelector(sel).click(); }
+
+    // Try a whole row: givens are rejected, empties take the digit.
+    for (var c = 0; c < 9; c++) { tapCell(c, 4); press('.key[data-digit="5"]'); }
+    // Pencil marks in the top row.
+    press("#btn-notes");
+    for (var c2 = 0; c2 < 5; c2++) {
+      tapCell(c2, 0);
+      press('.key[data-digit="2"]');
+      press('.key[data-digit="6"]');
+      press('.key[data-digit="9"]');
+    }
+    press("#btn-notes");
+  }
+})();
+</script>
+</body>
+</html>

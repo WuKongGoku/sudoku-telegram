@@ -1,0 +1,134 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>engine tests</title>
+<!--
+  Headless test harness for js/engine.js. Mirrors the checks in
+  ../../sudoku-godot/tools/test_engine.gd so both engines are held to the
+  same standard.
+
+    chrome --headless --disable-gpu --dump-dom tools/test_engine.html
+
+  The last line of output is PASS or FAIL.
+-->
+<pre id="out">running…</pre>
+<script src="../js/engine.js"></script>
+<script>
+(function () {
+  var E = SudokuEngine;
+  var KNOWN_PUZZLE =
+    "530070000600195000098000060800060003400803001700020006060000280000419005000080079";
+  var KNOWN_SOLUTION =
+    "534678912672195348198342567859761423426853791713924856961537284287419635345286179";
+
+  var lines = [];
+  var failures = 0;
+  var checks = 0;
+
+  function log(s) { lines.push(s); }
+
+  function check(ok, label) {
+    checks++;
+    if (!ok) { failures++; log("  FAIL  " + label); }
+  }
+
+  function isValidSolution(g) {
+    var i, j, seen;
+    for (i = 0; i < 9; i++) {
+      seen = {};
+      for (j = 0; j < 9; j++) seen[g[i * 9 + j]] = true;
+      if (Object.keys(seen).length !== 9 || seen[0]) return false;
+      seen = {};
+      for (j = 0; j < 9; j++) seen[g[j * 9 + i]] = true;
+      if (Object.keys(seen).length !== 9 || seen[0]) return false;
+    }
+    for (var b = 0; b < 9; b++) {
+      seen = {};
+      for (j = 0; j < 9; j++) seen[g[E.UNITS[18 + b][j]]] = true;
+      if (Object.keys(seen).length !== 9 || seen[0]) return false;
+    }
+    return true;
+  }
+
+  var t0 = Date.now();
+
+  // --- [1] known puzzle ---------------------------------------------
+  log("[1] known puzzle");
+  var board = new E.Board(E.loadLine(KNOWN_PUZZLE));
+  var r = board.solveLogically();
+  check(r.solved, "known puzzle solves logically");
+  check(isValidSolution(board.grid), "solution obeys Sudoku rules");
+  check(E.toLine(board.grid) === KNOWN_SOLUTION, "solution matches reference");
+  log("    hardest technique: " + E.techniqueName(r.maxTechnique));
+
+  // --- [2] solution counting ----------------------------------------
+  log("[2] solution counting");
+  var unique = E.loadLine(KNOWN_PUZZLE);
+  check(E.countSolutions(unique, 2) === 1, "known puzzle has exactly 1 solution");
+  var blanked = Uint8Array.from(unique); blanked[0] = 0;
+  check(E.countSolutions(blanked, 2) >= 1, "blanked puzzle still solvable");
+  var broken = Uint8Array.from(unique); broken[2] = 5; // duplicate 5 in the top-left box
+  check(E.countSolutions(broken, 2) === 0, "contradictory puzzle has 0 solutions");
+  check(E.countSolutions(new Uint8Array(81), 2) === 2, "empty grid has many solutions");
+  check(E.clueCount(unique) === 30, "clueCount works");
+  check(E.toLine(E.loadLine(KNOWN_PUZZLE)) === KNOWN_PUZZLE.replace(/\./g, "0"),
+    "loadLine/toLine round-trip");
+
+  // --- [3] generation per difficulty ---------------------------------
+  log("[3] generation per difficulty");
+  var specs = [
+    { name: "Easy",   clues: 34, cap: 1, min: -1, tries: 4 },
+    { name: "Medium", clues: 28, cap: 3, min: 2,  tries: 8 },
+    { name: "Hard",   clues: 24, cap: 5, min: 4,  tries: 12 },
+    { name: "Expert", clues: 20, cap: 6, min: 5,  tries: 14 }
+  ];
+  specs.forEach(function (spec) {
+    var t = Date.now();
+    var res = E.generate(spec.clues, spec.cap, spec.min, spec.tries);
+    var ms = Date.now() - t;
+    if (!res) { check(false, spec.name + ": generator produced a puzzle"); return; }
+    check(isValidSolution(res.solution), spec.name + ": solution valid");
+    check(E.countSolutions(res.puzzle, 2) === 1, spec.name + ": puzzle is unique");
+    check(res.maxTechnique <= spec.cap,
+      spec.name + ": tier " + res.maxTechnique + " within cap " + spec.cap);
+    var agrees = true;
+    for (var i = 0; i < 81; i++)
+      if (res.puzzle[i] && res.puzzle[i] !== res.solution[i]) agrees = false;
+    check(agrees, spec.name + ": givens match the solution");
+    var band = res.maxTechnique >= spec.min ? "" : "   (below preferred tier " + spec.min + ")";
+    log("    " + spec.name.padEnd(7) + " " + String(res.clues).padStart(2) + " clues, " +
+        E.techniqueName(res.maxTechnique).padEnd(20) + " " + String(ms).padStart(5) + " ms" + band);
+  });
+
+  // --- [4] hint chain -------------------------------------------------
+  log("[4] hint chain solves puzzles step by step");
+  for (var h = 0; h < 3; h++) {
+    var gen = E.generate(24, 6, -1, 8);
+    if (!gen) { check(false, "hint chain: generator produced a puzzle"); continue; }
+    var work = Uint8Array.from(gen.puzzle);
+    var badMove = false;
+    var steps = 0;
+    while (E.clueCount(work) < 81 && steps < 100) {
+      var move = new E.Board(work).findNextMove();
+      if (!move) break;
+      if (move.value !== gen.solution[move.index]) { badMove = true; break; }
+      work[move.index] = move.value;
+      steps++;
+    }
+    check(!badMove, "hint " + h + ": every suggested digit is correct");
+    check(E.clueCount(work) === 81, "hint " + h + ": chain finished the grid");
+  }
+
+  // --- [5] cross-check against the Godot engine's reference vectors ----
+  log("[5] technique grading matches the Godot engine");
+  var g1 = new E.Board(E.loadLine(KNOWN_PUZZLE)).solveLogically();
+  check(g1.maxTechnique === 0, "known puzzle grades as tier 0 (naked single)");
+
+  var ms = Date.now() - t0;
+  log("");
+  log(failures === 0
+    ? "PASS - " + checks + " checks in " + ms + " ms"
+    : "FAIL - " + failures + " of " + checks + " checks failed (" + ms + " ms)");
+  document.getElementById("out").textContent = lines.join("\n");
+  document.title = failures === 0 ? "PASS" : "FAIL";
+})();
+</script>

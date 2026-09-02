@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Sudoku</title>
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="css/style.css">
+<!-- Must come from telegram.org; it is the only allowed source for the SDK. -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+
+<div id="app">
+  <header id="topbar">
+    <span id="title">SUDOKU</span>
+    <span id="info"></span>
+    <span id="timer">00:00</span>
+  </header>
+
+  <div id="boardwrap">
+    <canvas id="board"></canvas>
+  </div>
+
+  <div id="pad">
+    <button class="key" data-digit="1">1</button>
+    <button class="key" data-digit="2">2</button>
+    <button class="key" data-digit="3">3</button>
+    <button class="key" data-digit="4">4</button>
+    <button class="key" data-digit="5">5</button>
+    <button class="key" data-digit="6">6</button>
+    <button class="key" data-digit="7">7</button>
+    <button class="key" data-digit="8">8</button>
+    <button class="key" data-digit="9">9</button>
+  </div>
+
+  <div id="tools">
+    <button id="btn-notes" class="tool">Notes<small>off</small></button>
+    <button id="btn-erase" class="tool">Erase</button>
+    <button id="btn-undo" class="tool">Undo</button>
+    <button id="btn-hint" class="tool">Hint</button>
+    <button id="btn-check" class="tool">Check</button>
+  </div>
+
+  <footer id="bottombar">
+    <select id="difficulty" aria-label="Difficulty">
+      <option value="0">Easy</option>
+      <option value="1">Medium</option>
+      <option value="2">Hard</option>
+      <option value="3">Expert</option>
+    </select>
+    <button id="btn-new" class="tool">New Game</button>
+    <span id="status"></span>
+  </footer>
+</div>
+
+<div id="overlay" hidden>
+  <div id="overlay-card">
+    <h1 id="overlay-title"></h1>
+    <p id="overlay-text"></p>
+    <button id="overlay-button" class="tool primary">New Game</button>
+  </div>
+</div>
+
+<script src="js/engine.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
